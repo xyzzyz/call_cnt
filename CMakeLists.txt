@@ -12,4 +12,5 @@ add_library(intercept SHARED intercept.c)
 add_executable(testInterceptor testInterceptor.c)
 target_link_libraries(testInterceptor intercept call_cnt test)
 
-set(CMAKE_C_FLAGS_DEBUG "-g -DDEBUG -std=gnu99")
+set(CMAKE_C_FLAGS_DEBUG "-g -DDEBUG -std=gnu99 -O0 -Wall -Wextra")
+set(CMAKE_C_FLAGS_RELEASE "-std=gnu99 -O0 -Wall -Wextra")
