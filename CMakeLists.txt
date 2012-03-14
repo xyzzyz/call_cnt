@@ -3,7 +3,7 @@ project (call_cnt)
 set(CMAKE_BUILD_TYPE Debug)
 
 add_library(call_cnt SHARED call_cnt.c)
-target_link_libraries(call_cnt m)
+target_link_libraries(call_cnt m dl)
 
 add_library(test SHARED test.c)
 

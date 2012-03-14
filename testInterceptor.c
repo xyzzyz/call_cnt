@@ -9,6 +9,7 @@ main(int argc, char __attribute__((unused)) **argv) {
     intercept(&c, "libintercept.so");
     testIntercept();
     stop_intercepting(c);
+    print_stats_to_stream(stdout, c);
     release_stats(c);
   } else {
     testIntercept();

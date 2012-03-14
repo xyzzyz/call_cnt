@@ -155,7 +155,7 @@ intercept(struct call_cnt **desc, char const *lib_name) {
     return -1;
   }
   int n = d.plt_count;
-  struct call_cnt *cnt = *desc;
+  struct call_cnt *cnt;
   
   cnt = malloc(sizeof(struct call_cnt));
   cnt->saved_entries = malloc(n*sizeof(ElfW(Addr)));
@@ -172,17 +172,43 @@ intercept(struct call_cnt **desc, char const *lib_name) {
     *(cnt->plt_entries[i]) = (ElfW(Addr)) &(cnt->code[i]);
 
   }
+  *desc = cnt;
   return 0;
 }
 
 int
-stop_intercepting(struct call_cnt __attribute__((unused)) *desc) {
+stop_intercepting(struct call_cnt *desc) {
+  int n = desc->plt_count;
+  for(int i = 0; i < n; i++) {
+    *(desc->plt_entries[i]) = desc->saved_entries[i];
+  }
   return 0;
+}
+
+int
+print_stats_to_stream(FILE *stream, struct call_cnt *desc) {
+  int n = desc->plt_count;
+  Dl_info info;
+  for(int i = 0; i < n; i++) {
+    if(0 != dladdr((void*) desc->saved_entries[i], &info)) {
+      if(info.dli_sname != NULL) {
+        fprintf(stream, "%s: %d\n", info.dli_sname, desc->call_count[i]);
+      } else {
+        fprintf(stream, "0x%lx: %d\n", desc->saved_entries[i], desc->call_count[i]);
+      }
+    } else {
+        fprintf(stream, "0x%lx: %d\n", desc->saved_entries[i], desc->call_count[i]);
+    }
+    
+  }
+  return 0;
+  
 }
 
 int
 release_stats(struct call_cnt *desc) {
   free(desc->plt_entries);
   free(desc->call_count);
+  free(desc->code);
   return 0;
 }
