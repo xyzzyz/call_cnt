@@ -26,10 +26,15 @@
 struct walk_callback_data {
   char const *to_intercept;
   ElfW(Addr) **plt_entries;
+
+  bool *is_internal;
+  
   int plt_count;
 };
 
 #ifdef __x86_64__
+
+#define ELF_R_SYM(x) ELF64_R_SYM(x)
 
 static const unsigned char header[] = {
   '\x50',         // push %rax
@@ -51,6 +56,10 @@ typedef unsigned char counter_code_t[sizeof(header) +
                                      sizeof(inc) +
                                      sizeof(ElfW(Addr))+
                                      sizeof(jump)];
+
+#else
+#define ELF_R_SYM(x) ELF32_R_SYM(x)
+
 #endif
 
 struct call_cnt {
@@ -61,6 +70,8 @@ struct call_cnt {
 
   int *call_count;
 
+  bool *is_internal;
+  
   counter_code_t *code;
 };
 
@@ -98,6 +109,9 @@ walk_libraries_callback(struct dl_phdr_info *info,
 
   struct walk_callback_data *d = data;
   char *path = strdup(info->dlpi_name);
+  if(path == NULL) {
+    return -1;
+  }
   char *bname = basename(path);
   if(0 == strcmp(bname, d->to_intercept)) {
     DLOG("Found intercept path: %s\n", info->dlpi_name);
@@ -107,6 +121,8 @@ walk_libraries_callback(struct dl_phdr_info *info,
 
         int pltrel_count = 0;
         ElfW(Rela) *jmprel;
+        ElfW(Sym) *symtab;
+        
 
         while(dyn->d_tag != DT_NULL) {
           switch(dyn->d_tag) {
@@ -120,6 +136,12 @@ walk_libraries_callback(struct dl_phdr_info *info,
             DLOG("mamy DT_JMPREL, ptr: 0x%lx\n", dyn->d_un.d_ptr);
             jmprel = (void*) dyn->d_un.d_ptr;
             break;
+
+          case DT_SYMTAB:
+            DLOG("mamy DT_SYMTAB, ptr: 0x%lx\n", dyn->d_un.d_ptr);
+            symtab = (void*) dyn->d_un.d_ptr;
+            break;
+            
           }
 
           dyn++;
@@ -130,13 +152,22 @@ walk_libraries_callback(struct dl_phdr_info *info,
         }
         d->plt_count = pltrel_count;
         d->plt_entries = malloc(pltrel_count * sizeof(ElfW(Addr)*));
-                  
-        for(int j = 0; j < pltrel_count; j++) {
-          ElfW(Addr) *addr = (ElfW(Addr)*) (info->dlpi_addr + jmprel[j].r_offset);
-          DLOG("pltentry: 0x%lx\n", *((ElfW(Addr)*) addr));
-          d->plt_entries[j] = addr;
+        d->is_internal = calloc(pltrel_count, sizeof(bool));
+        if(d->plt_entries == NULL) {
+          free(path);
+          return -1;
         }
         
+        for(int j = 0; j < pltrel_count; j++) {
+          ElfW(Addr) *addr = (ElfW(Addr)*) (info->dlpi_addr + jmprel[j].r_offset);
+          ElfW(Sym) *sym = symtab + ELF_R_SYM(jmprel[j].r_info);
+          DLOG("pltentry: 0x%lx, size: 0x%ld\n", *((ElfW(Addr)*) addr), sym->st_size);
+          d->plt_entries[j] = addr;
+          if(sym->st_shndx != SHN_UNDEF) {
+            DLOG("found local symbol: 0x%lx\n", *((ElfW(Addr)*) addr));
+            d->is_internal[j] = true;
+          }
+        }
       }
     }
   }
@@ -149,6 +180,7 @@ intercept(struct call_cnt **desc, char const *lib_name) {
   struct walk_callback_data d;
   d.to_intercept = lib_name;
   d.plt_entries = NULL;
+  d.is_internal = NULL;
   dl_iterate_phdr(walk_libraries_callback, &d);
   
   if(d.plt_entries == NULL) {
@@ -158,12 +190,25 @@ intercept(struct call_cnt **desc, char const *lib_name) {
   struct call_cnt *cnt;
   
   cnt = malloc(sizeof(struct call_cnt));
+  if(cnt == NULL) return -1;
   cnt->saved_entries = malloc(n*sizeof(ElfW(Addr)));
   cnt->plt_count = n;
   cnt->plt_entries = d.plt_entries;
+  cnt->is_internal = d.is_internal;
   cnt->call_count = calloc(n, sizeof(int));
+
   cnt->code = memalign(sysconf(_SC_PAGE_SIZE),  n*sizeof(counter_code_t));
-  mprotect(cnt->code, n*sizeof(counter_code_t), PROT_READ | PROT_WRITE | PROT_EXEC);
+  if(cnt->code == NULL) {
+    free(cnt);
+    return -1;
+  }
+  if(-1 == mprotect(cnt->code,
+                    n*sizeof(counter_code_t),
+                    PROT_READ | PROT_WRITE | PROT_EXEC)) {
+    free(cnt->code);
+    free(cnt);
+    return -1;
+  }
   for(int i = 0; i < n; i++) {
     cnt->saved_entries[i] = *(cnt->plt_entries[i]);
     make_inc_counter_code(&(cnt->code[i]),
@@ -205,9 +250,35 @@ print_stats_to_stream(FILE *stream, struct call_cnt *desc) {
   
 }
 
+ssize_t
+get_num_intern_calls(struct call_cnt * desc) {
+  ssize_t count = 0;
+  int n = desc->plt_count;
+  for(int i = 0; i < n; i++) {
+    if(desc->is_internal[i]) {
+      count += desc->call_count[i];
+    }
+  }
+  return count;
+}
+
+ssize_t get_num_extern_calls(struct call_cnt * desc) {
+  ssize_t count = 0;
+  int n = desc->plt_count;
+  for(int i = 0; i < n; i++) {
+    if(!desc->is_internal[i]) {
+      count += desc->call_count[i];
+    }
+  }
+  return count;
+}
+
+
+
 int
 release_stats(struct call_cnt *desc) {
   free(desc->plt_entries);
+  free(desc->is_internal);
   free(desc->call_count);
   free(desc->code);
   return 0;
