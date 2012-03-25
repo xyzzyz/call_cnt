@@ -6,7 +6,7 @@ int
 main(int argc, char __attribute__((unused)) **argv) {
   struct call_cnt *c;
   if(argc == 1) {
-    intercept(&c, "libintercept.so");
+    if(-1 == intercept(&c, "libintercept.so")) return -1;
     testIntercept();
     stop_intercepting(c);
     print_stats_to_stream(stdout, c);

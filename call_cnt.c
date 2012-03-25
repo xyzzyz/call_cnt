@@ -34,7 +34,12 @@ struct walk_callback_data {
 
 #ifdef __x86_64__
 
+#define FMT "%lx"
+
 #define ELF_R_SYM(x) ELF64_R_SYM(x)
+
+// XXX HACK
+#define REL_TYPE ElfW(Rela) 
 
 static const unsigned char header[] = {
   '\x50',         // push %rax
@@ -58,7 +63,43 @@ typedef unsigned char counter_code_t[sizeof(header) +
                                      sizeof(jump)];
 
 #else
+
+#define FMT "%x"
+
 #define ELF_R_SYM(x) ELF32_R_SYM(x)
+
+// XXX HACK
+#define REL_TYPE ElfW(Rel) 
+
+
+/* 0:   50                      push   %eax */
+/* 1:   b8 78 56 34 12          mov    $0x12345678,%eax */
+/* 6:   f0 ff 00                lock incl (%eax) */
+/* 9:   b8 44 33 22 11          mov    $0x11223344,%eax */
+/* e:   87 04 24                xchg   %eax,(%esp) */
+/* 11:  c3                      ret     */
+
+static const unsigned char header[] = {
+  '\x50', // push %eax
+  '\xb8', // mov ..., %eax
+};
+
+static const unsigned char inc[] = {
+  '\xf0', '\xff', '\x00', // lock incl (%eax)
+  '\xb8', // mov ..., %eax,
+};
+
+static const unsigned char jump[] = {
+  '\x87', '\x04', '\x24', // xchg %eax, (%esp)
+  '\xc3' // ret
+};
+
+typedef unsigned char counter_code_t[sizeof(header) +
+                                     sizeof(int*) +
+                                     sizeof(inc) +
+                                     sizeof(ElfW(Addr))+
+                                     sizeof(jump)];
+
 
 #endif
 
@@ -105,7 +146,7 @@ walk_libraries_callback(struct dl_phdr_info *info,
                         size_t __attribute__((unused)) size,
                         void *data) {
 
-  DLOG("0x%lx: %s\n", info->dlpi_addr, info->dlpi_name);
+  DLOG("0x"FMT": %s\n", info->dlpi_addr, info->dlpi_name);
 
   struct walk_callback_data *d = data;
   char *path = strdup(info->dlpi_name);
@@ -120,7 +161,7 @@ walk_libraries_callback(struct dl_phdr_info *info,
         ElfW(Dyn) *dyn = (void*) info->dlpi_addr + info->dlpi_phdr[i].p_vaddr;
 
         int pltrel_count = 0;
-        ElfW(Rela) *jmprel;
+        REL_TYPE *jmprel;
         ElfW(Sym) *symtab;
         
 
@@ -128,17 +169,17 @@ walk_libraries_callback(struct dl_phdr_info *info,
           switch(dyn->d_tag) {
 
           case DT_PLTRELSZ:
-            pltrel_count = dyn->d_un.d_val / sizeof(ElfW(Rela)); 
+            pltrel_count = dyn->d_un.d_val / sizeof(REL_TYPE); 
             DLOG("pltrel_count: %d\n", pltrel_count);
             break;
 
           case DT_JMPREL:
-            DLOG("mamy DT_JMPREL, ptr: 0x%lx\n", dyn->d_un.d_ptr);
+            DLOG("mamy DT_JMPREL, ptr: 0x"FMT"\n", dyn->d_un.d_ptr);
             jmprel = (void*) dyn->d_un.d_ptr;
             break;
 
           case DT_SYMTAB:
-            DLOG("mamy DT_SYMTAB, ptr: 0x%lx\n", dyn->d_un.d_ptr);
+            DLOG("mamy DT_SYMTAB, ptr: 0x"FMT"\n", dyn->d_un.d_ptr);
             symtab = (void*) dyn->d_un.d_ptr;
             break;
             
@@ -161,10 +202,10 @@ walk_libraries_callback(struct dl_phdr_info *info,
         for(int j = 0; j < pltrel_count; j++) {
           ElfW(Addr) *addr = (ElfW(Addr)*) (info->dlpi_addr + jmprel[j].r_offset);
           ElfW(Sym) *sym = symtab + ELF_R_SYM(jmprel[j].r_info);
-          DLOG("pltentry: 0x%lx, size: 0x%ld\n", *((ElfW(Addr)*) addr), sym->st_size);
+          DLOG("pltentry: 0x"FMT"\n", *((ElfW(Addr)*) addr));
           d->plt_entries[j] = addr;
           if(sym->st_shndx != SHN_UNDEF) {
-            DLOG("found local symbol: 0x%lx\n", *((ElfW(Addr)*) addr));
+            DLOG("found local symbol: 0x"FMT"\n", *((ElfW(Addr)*) addr));
             d->is_internal[j] = true;
           }
         }
@@ -239,10 +280,10 @@ print_stats_to_stream(FILE *stream, struct call_cnt *desc) {
       if(info.dli_sname != NULL) {
         fprintf(stream, "%s: %d\n", info.dli_sname, desc->call_count[i]);
       } else {
-        fprintf(stream, "0x%lx: %d\n", desc->saved_entries[i], desc->call_count[i]);
+        fprintf(stream, "0x"FMT": %d\n", desc->saved_entries[i], desc->call_count[i]);
       }
     } else {
-        fprintf(stream, "0x%lx: %d\n", desc->saved_entries[i], desc->call_count[i]);
+        fprintf(stream, "0x"FMT": %d\n", desc->saved_entries[i], desc->call_count[i]);
     }
     
   }
