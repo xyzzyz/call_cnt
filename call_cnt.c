@@ -151,7 +151,7 @@ walk_libraries_callback(struct dl_phdr_info *info,
     return -1;
   }
   char *bname = basename(path);
-  if(0 == strcmp(bname, d->to_intercept)) {
+  if(0 == strcmp(bname, d->to_intercept) && d->plt_entries == NULL) {
     DLOG("Found intercept path: %s\n", info->dlpi_name);
     free(path);
     int *pt_loads = malloc(info->dlpi_phnum * sizeof(int));
@@ -324,7 +324,8 @@ get_num_intern_calls(struct call_cnt * desc) {
   return count;
 }
 
-ssize_t get_num_extern_calls(struct call_cnt * desc) {
+ssize_t
+get_num_extern_calls(struct call_cnt * desc) {
   ssize_t count = 0;
   int n = desc->plt_count;
   for(int i = 0; i < n; i++) {
