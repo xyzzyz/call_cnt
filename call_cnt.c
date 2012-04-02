@@ -36,8 +36,6 @@ struct walk_callback_data {
 
 #define FMT "%lx"
 
-#define ELF_R_SYM(x) ELF64_R_SYM(x)
-
 // XXX HACK
 #define REL_TYPE ElfW(Rela) 
 
@@ -66,7 +64,6 @@ typedef unsigned char counter_code_t[sizeof(header) +
 
 #define FMT "%x"
 
-#define ELF_R_SYM(x) ELF32_R_SYM(x)
 
 // XXX HACK
 #define REL_TYPE ElfW(Rel) 
@@ -156,14 +153,22 @@ walk_libraries_callback(struct dl_phdr_info *info,
   char *bname = basename(path);
   if(0 == strcmp(bname, d->to_intercept)) {
     DLOG("Found intercept path: %s\n", info->dlpi_name);
+    free(path);
+    int *pt_loads = malloc(info->dlpi_phnum * sizeof(int));
+    if(pt_loads == NULL) {
+      return -1;
+    }
+    int pt_loads_count = 0;
     for(int i = 0; i < info->dlpi_phnum; i++) {
-      if(info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
+      if(info->dlpi_phdr[i].p_type == PT_LOAD) {
+        DLOG("found PT_LOAD: %d\n", i);
+        pt_loads[pt_loads_count] = i;
+        pt_loads_count++;
+      } else if(info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
         ElfW(Dyn) *dyn = (void*) info->dlpi_addr + info->dlpi_phdr[i].p_vaddr;
 
-        int pltrel_count = 0;
+        int pltrel_count = -1;
         REL_TYPE *jmprel;
-        ElfW(Sym) *symtab;
-        
 
         while(dyn->d_tag != DT_NULL) {
           switch(dyn->d_tag) {
@@ -177,42 +182,47 @@ walk_libraries_callback(struct dl_phdr_info *info,
             DLOG("mamy DT_JMPREL, ptr: 0x"FMT"\n", dyn->d_un.d_ptr);
             jmprel = (void*) dyn->d_un.d_ptr;
             break;
-
-          case DT_SYMTAB:
-            DLOG("mamy DT_SYMTAB, ptr: 0x"FMT"\n", dyn->d_un.d_ptr);
-            symtab = (void*) dyn->d_un.d_ptr;
-            break;
-            
           }
 
           dyn++;
         }
 
-        if(pltrel_count <= 0) {
+        if(pltrel_count < 0) {
+          free(pt_loads);
           return -1;
         }
         d->plt_count = pltrel_count;
         d->plt_entries = malloc(pltrel_count * sizeof(ElfW(Addr)*));
-        d->is_internal = calloc(pltrel_count, sizeof(bool));
         if(d->plt_entries == NULL) {
-          free(path);
+          free(pt_loads);
+          return -1;
+        }
+        d->is_internal = calloc(pltrel_count, sizeof(bool));
+        if(d->is_internal == NULL) {
+          free(d->plt_entries);
+          free(pt_loads);
           return -1;
         }
         
         for(int j = 0; j < pltrel_count; j++) {
           ElfW(Addr) *addr = (ElfW(Addr)*) (info->dlpi_addr + jmprel[j].r_offset);
-          ElfW(Sym) *sym = symtab + ELF_R_SYM(jmprel[j].r_info);
-          DLOG("pltentry: 0x"FMT"\n", *((ElfW(Addr)*) addr));
+          ElfW(Addr) fun_addr = *((ElfW(Addr)*) addr);
+          DLOG("pltentry: 0x"FMT"\n", fun_addr);
           d->plt_entries[j] = addr;
-          if(sym->st_shndx != SHN_UNDEF) {
-            DLOG("found local symbol: 0x"FMT"\n", *((ElfW(Addr)*) addr));
-            d->is_internal[j] = true;
+          for(int k = 0; k < pt_loads_count; k++) {
+            ElfW(Phdr) phdr = info->dlpi_phdr[k];
+            ElfW(Addr) load_addr = info->dlpi_addr + info->dlpi_phdr[k].p_vaddr;
+            if(load_addr <= fun_addr && fun_addr <= load_addr + phdr.p_memsz) {
+              d->is_internal[j] = true;
+            }
           }
         }
       }
     }
+    free(pt_loads);
+  } else {
+    free(path);
   }
-  free(path);
   return 0;
 }
 
@@ -231,25 +241,23 @@ intercept(struct call_cnt **desc, char const *lib_name) {
   struct call_cnt *cnt;
   
   cnt = malloc(sizeof(struct call_cnt));
-  if(cnt == NULL) return -1;
+  if(cnt == NULL) goto cnt_fail;
   cnt->saved_entries = malloc(n*sizeof(ElfW(Addr)));
+  if(cnt->saved_entries == NULL) goto saved_entries_fail;
   cnt->plt_count = n;
   cnt->plt_entries = d.plt_entries;
   cnt->is_internal = d.is_internal;
   cnt->call_count = calloc(n, sizeof(int));
+  if(cnt->call_count == NULL) goto call_count_fail;
 
   cnt->code = memalign(sysconf(_SC_PAGE_SIZE),  n*sizeof(counter_code_t));
-  if(cnt->code == NULL) {
-    free(cnt);
-    return -1;
-  }
+  if(cnt->code == NULL) goto code_fail;
+
   if(-1 == mprotect(cnt->code,
                     n*sizeof(counter_code_t),
-                    PROT_READ | PROT_WRITE | PROT_EXEC)) {
-    free(cnt->code);
-    free(cnt);
-    return -1;
-  }
+                    PROT_READ | PROT_WRITE | PROT_EXEC))
+    goto mprotect_fail;
+  
   for(int i = 0; i < n; i++) {
     cnt->saved_entries[i] = *(cnt->plt_entries[i]);
     make_inc_counter_code(&(cnt->code[i]),
@@ -260,6 +268,19 @@ intercept(struct call_cnt **desc, char const *lib_name) {
   }
   *desc = cnt;
   return 0;
+  
+ mprotect_fail:
+  free(cnt->code);
+ code_fail:
+  free(cnt->call_count);
+ call_count_fail:
+  free(cnt->saved_entries);
+ saved_entries_fail:
+  free(cnt);
+ cnt_fail:
+  free(d.plt_entries);
+  free(d.is_internal);
+  return -1;
 }
 
 int
@@ -321,6 +342,8 @@ release_stats(struct call_cnt *desc) {
   free(desc->plt_entries);
   free(desc->is_internal);
   free(desc->call_count);
+  free(desc->saved_entries);
   free(desc->code);
+  free(desc);
   return 0;
 }
