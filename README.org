@@ -1,0 +1,6 @@
+* autor: Adam Michalik <adamm@mimuw.edu.pl>
+* instrukcja użycia: 
+  $ cmake .
+  $ make 
+  w katalogu pojawia się libcall_cnt.so, pojawia się też testowa binarka testInterceptor
+
