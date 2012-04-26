@@ -1,8 +1,8 @@
 * call_cnt
-** what it is
+** what is it?
    the purpose of libcall_cnt is to count the calls made by a shared
    ELF library through PLT mechanism
-** what it is good for
+** what is it good for?
    no idea, to be honest. i created it as a part of advanced operating
    course i was taking.
 ** usage
