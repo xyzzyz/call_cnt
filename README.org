@@ -8,5 +8,9 @@
 ** usage
    sample usage is in testInterceptor.c, the library interface is
    obviously in call_cnt.h
+** license
+   do with it whatever you want, i'll be happy if you let me know that
+   you find it interesting (i hope you do), or that you use it (wow,
+   what for?)
 ** author
    Adam Michalik <adamm@mimuw.edu.pl>
